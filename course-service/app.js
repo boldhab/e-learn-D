@@ -5,9 +5,43 @@ require('dotenv').config();
 
 const courseRoutes = require('./routes/courseRoutes');
 const quizRoutes = require('./routes/quizRoutes');
-const { activityMiddleware, getRecentActivity } = require('../shared/activity-log');
+const { activityMiddleware } = require('../shared/activity-log');
 
 const app = express();
+
+// ============================================
+// MONITORING ENDPOINTS
+// ============================================
+
+if (!global.apiActivity) {
+    global.apiActivity = [];
+}
+
+const trackApiActivity = (req, res, next) => {
+    const startTime = Date.now();
+    const originalEnd = res.end;
+
+    res.end = function(chunk, encoding, callback) {
+        const duration = Date.now() - startTime;
+
+        global.apiActivity.unshift({
+            timestamp: new Date().toISOString(),
+            method: req.method,
+            path: req.path,
+            status: res.statusCode,
+            duration,
+            server: process.env.DB_NAME || 'unknown',
+        });
+
+        if (global.apiActivity.length > 100) {
+            global.apiActivity = global.apiActivity.slice(0, 100);
+        }
+
+        return originalEnd.call(this, chunk, encoding, callback);
+    };
+
+    next();
+};
 
 // General rate limit for all requests
 const limiter = rateLimit({
@@ -21,6 +55,7 @@ const limiter = rateLimit({
 app.use(cors());
 app.use(express.json());
 app.use(activityMiddleware('course-service'));
+app.use(trackApiActivity);
 
 // Apply to all routes
 app.use('/api/', limiter);
@@ -79,22 +114,31 @@ app.get('/api/health/distributed', async (req, res) => {
 
 app.get('/api/monitoring/stats', async (req, res) => {
     const { query, getStats } = require('./db');
-    const courses = await query('SELECT COUNT(*)::int AS total FROM courses');
-    const stats = getStats();
-
-    res.json({
-        service: 'course-service',
+    const stats = {
         totalUsers: 0,
-        totalCourses: courses.rows[0].total,
+        totalCourses: 0,
         totalEnrollments: 0,
-        reads: stats.reads,
-        writes: stats.writes,
+        reads: 0,
+        writes: 0,
+        service: process.env.DB_NAME || 'course_db',
         timestamp: new Date().toISOString(),
-    });
+    };
+
+    try {
+        const courses = await query('SELECT COUNT(*) FROM courses');
+        const dbStats = getStats();
+        stats.totalCourses = parseInt(courses.rows[0].count, 10);
+        stats.reads = dbStats.reads || 0;
+        stats.writes = dbStats.writes || 0;
+        res.json(stats);
+    } catch (error) {
+        console.error('Stats error:', error.message);
+        res.json(stats);
+    }
 });
 
 app.get('/api/monitoring/activity', (req, res) => {
-    res.json({ service: 'course-service', activity: getRecentActivity(10) });
+    res.json(global.apiActivity || []);
 });
 
 module.exports = app;
