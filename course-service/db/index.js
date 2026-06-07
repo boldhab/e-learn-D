@@ -131,6 +131,7 @@ const initDB = async () => {
         await query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS popularity INTEGER NOT NULL DEFAULT 0;`);
         await query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS average_rating NUMERIC(3,2) NOT NULL DEFAULT 0;`);
         await query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS rating_count INTEGER NOT NULL DEFAULT 0;`);
+        await query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS teacher_notes TEXT;`);
         await query(`ALTER TABLE questions ADD COLUMN IF NOT EXISTS expected_answer TEXT;`);
         await query(`ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_difficulty_check;`);
         await query(`

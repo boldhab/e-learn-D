@@ -11,6 +11,9 @@ const CourseDetail = () => {
   const [quizzes, setQuizzes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [enrolling, setEnrolling] = useState(false);
+  const [editingLesson, setEditingLesson] = useState(null);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [savingNotes, setSavingNotes] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
 
@@ -55,15 +58,6 @@ const CourseDetail = () => {
     }
   };
 
-  const handleProgressUpdate = async (newProgress) => {
-    try {
-      await learningAPI.updateProgress({ student_id: user.id, course_id: id, progress: newProgress });
-      setProgress(newProgress);
-    } catch {
-      alert('Failed to update progress');
-    }
-  };
-
   const handleReportCourse = async () => {
     const reason = window.prompt('Why are you reporting this course?');
     if (!reason || !reason.trim()) {
@@ -79,6 +73,38 @@ const CourseDetail = () => {
       alert('Report submitted. Thank you for helping keep the platform safe.');
     } catch (err) {
       alert(err.response?.data?.error || 'Failed to submit report');
+    }
+  };
+
+  const openNotesEditor = (lesson) => {
+    setEditingLesson(lesson);
+    setNotesDraft(lesson.teacher_notes || '');
+  };
+
+  const handleSaveNotes = async () => {
+    if (!editingLesson) return;
+
+    setSavingNotes(true);
+    try {
+      const res = await courseAPI.updateLesson(editingLesson.id, {
+        title: editingLesson.title,
+        content: editingLesson.content,
+        video_url: editingLesson.video_url,
+        order: editingLesson.order,
+        teacher_notes: notesDraft,
+      });
+
+      setCourse((current) => ({
+        ...current,
+        lessons: current.lessons.map((lesson) =>
+          lesson.id === editingLesson.id ? { ...lesson, ...res.data } : lesson
+        ),
+      }));
+      setEditingLesson(null);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to save teacher notes');
+    } finally {
+      setSavingNotes(false);
     }
   };
 
@@ -190,20 +216,13 @@ const CourseDetail = () => {
           <div className="progress-track" style={{ marginBottom: '1rem' }}>
             <div className="progress-fill" style={{ width: `${progress}%` }} />
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:'1rem' }}>
-            <input
-              id="progress-slider"
-              type="range"
-              min="0"
-              max="100"
-              value={progress}
-              onChange={(e) => handleProgressUpdate(parseInt(e.target.value))}
-              style={{ flex: 1 }}
-            />
-            <span style={{ fontSize:'0.85rem', color:'#94a3b8', whiteSpace:'nowrap' }}>
-              {progress === 100 ? '🎉 Completed!' : progress > 0 ? 'In progress' : 'Not started'}
+          {progress === 100 ? (
+            <Link to={`/certificate/${id}`} className="btn btn-success btn-sm">View Certificate</Link>
+          ) : (
+            <span style={{ fontSize:'0.85rem', color:'var(--text-secondary)' }}>
+              Complete each lesson quiz with at least 50% to unlock full course completion.
             </span>
-          </div>
+          )}
         </div>
       )}
 
@@ -264,7 +283,7 @@ const CourseDetail = () => {
         ) : (
           <div className="lessons-list">
             {course.lessons.map((lesson, index) => (
-              <div key={lesson.id} className="lesson-item" id={`lesson-${lesson.id}`}>
+              <Link key={lesson.id} to={`/course/${id}/lesson/${lesson.id}`} className="lesson-item" id={`lesson-${lesson.id}`}>
                 <div className="lesson-number">{index + 1}</div>
                 <div className="lesson-content">
                   <div className="lesson-title">{lesson.title}</div>
@@ -281,12 +300,64 @@ const CourseDetail = () => {
                       ▶ Watch Video
                     </a>
                   )}
+                  {lesson.teacher_notes && (enrolled || isTeacherOwner) && (
+                    <div className="teacher-notes-card">
+                      <div className="teacher-notes-title">📝 Teacher's Notes</div>
+                      <div className="teacher-notes-content">{lesson.teacher_notes}</div>
+                    </div>
+                  )}
+                  {isTeacherOwner && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        openNotesEditor(lesson);
+                      }}
+                      style={{ marginTop: '0.75rem' }}
+                    >
+                      Edit Notes
+                    </button>
+                  )}
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         )}
       </div>
+
+      {editingLesson && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-panel" role="dialog" aria-modal="true" aria-labelledby="edit-notes-title">
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'1rem', marginBottom:'1rem' }}>
+              <h3 id="edit-notes-title" style={{ color:'var(--text-primary)' }}>Edit Notes</h3>
+              <button type="button" className="icon-button" onClick={() => setEditingLesson(null)} aria-label="Close notes editor">
+                x
+              </button>
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="teacher-notes-editor">
+                Notes for Students (only visible to enrolled students)
+              </label>
+              <textarea
+                id="teacher-notes-editor"
+                className="form-input"
+                value={notesDraft}
+                onChange={(e) => setNotesDraft(e.target.value)}
+                rows={8}
+              />
+            </div>
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:'0.75rem', marginTop:'1.25rem' }}>
+              <button type="button" className="btn btn-ghost" onClick={() => setEditingLesson(null)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSaveNotes} disabled={savingNotes}>
+                {savingNotes ? 'Saving...' : 'Save Notes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

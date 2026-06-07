@@ -13,6 +13,9 @@ import ManageQuizzes from './pages/ManageQuizzes';
 import AddLesson from './pages/AddLesson';
 import AdminPanel from './pages/AdminPanel';
 import Quiz from './pages/Quiz';
+import Profile from './pages/Profile';
+import LessonDetail from './pages/LessonDetail';
+import Certificate from './pages/Certificate';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -80,6 +83,10 @@ const AppRoutes = () => {
         <PrivateRoute><CourseDetail /></PrivateRoute>
       } />
 
+      <Route path="/course/:courseId/lesson/:lessonId" element={
+        <PrivateRoute><LessonDetail /></PrivateRoute>
+      } />
+
       <Route path="/course/:courseId/add-lesson" element={
         <TeacherRoute><AddLesson /></TeacherRoute>
       } />
@@ -96,8 +103,16 @@ const AppRoutes = () => {
         <PrivateRoute><Quiz /></PrivateRoute>
       } />
 
+      <Route path="/certificate/:courseId" element={
+        <PrivateRoute><Certificate /></PrivateRoute>
+      } />
+
       <Route path="/my-courses" element={
         <PrivateRoute><MyCourses /></PrivateRoute>
+      } />
+
+      <Route path="/profile" element={
+        <PrivateRoute><Profile /></PrivateRoute>
       } />
 
       <Route path="/create-course" element={

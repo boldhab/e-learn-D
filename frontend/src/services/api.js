@@ -20,6 +20,9 @@ export const authAPI = {
   register: (data) => axios.post(`${AUTH_API}/register`, data),
   login: (data) => axios.post(`${AUTH_API}/login`, data),
   getMe: () => api.get(`${AUTH_API}/me`),
+  getProfile: (userId) => api.get(`${AUTH_API}/profile/${userId}`),
+  updateProfile: (data) => api.put(`${AUTH_API}/profile`, data),
+  changePassword: (data) => api.put(`${AUTH_API}/change-password`, data),
   adminGetUsers: () => api.get(`${AUTH_ADMIN_API}/users`),
   adminUpdateUserStatus: (id, isActive) => api.patch(`${AUTH_ADMIN_API}/users/${id}/status`, { is_active: isActive }),
   adminAnalytics: () => api.get(`${AUTH_ADMIN_API}/analytics`),
@@ -34,7 +37,9 @@ export const courseAPI = {
   getById: (id) => api.get(`${COURSE_API}/courses/${id}`),
   create: (data) => api.post(`${COURSE_API}/courses`, data),
   addLesson: (data) => api.post(`${COURSE_API}/lessons`, data),
+  updateLesson: (id, data) => api.put(`${COURSE_API}/lessons/${id}`, data),
   getTeacherCourses: (teacherId) => api.get(`${COURSE_API}/teacher/${teacherId}/courses`),
+  getTeacherStats: (teacherId) => api.get(`${COURSE_API}/teacher/${teacherId}/stats`),
   reportContent: (data) => api.post(`${COURSE_API}/report`, data),
   adminGetCourses: () => api.get(`${COURSE_API}/admin/courses`),
   adminApproveCourse: (id, approved = true) => api.patch(`${COURSE_API}/admin/courses/${id}/approve`, { approved }),
@@ -65,8 +70,14 @@ export const quizAPI = {
 export const learningAPI = {
   enroll: (courseId) => api.post(`${LEARNING_API}/enroll`, { course_id: courseId }),
   getMyCourses: (studentId) => api.get(`${LEARNING_API}/my-courses/${studentId}`),
+  getDashboard: (studentId) => api.get(`${LEARNING_API}/dashboard/${studentId}`),
+  completeLesson: (data) => api.post(`${LEARNING_API}/lessons/complete`, data),
   updateProgress: (data) => api.put(`${LEARNING_API}/progress`, data),
   getProgress: (studentId, courseId) => api.get(`${LEARNING_API}/progress/${studentId}/${courseId}`),
+  getCertificate: (studentId, courseId) => api.get(`${LEARNING_API}/certificates/${studentId}/${courseId}`),
+  downloadCertificate: (studentId, courseId) => api.get(`${LEARNING_API}/certificates/${studentId}/${courseId}/download`, {
+    responseType: 'blob',
+  }),
   adminSummary: () => api.get(`${LEARNING_API}/admin/summary`),
 };
 

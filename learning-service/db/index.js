@@ -27,10 +27,23 @@ const initDB = async () => {
             UNIQUE(student_id, course_id)
         );
     `;
+
+    const createLessonCompletionsTable = `
+        CREATE TABLE IF NOT EXISTS lesson_completions (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            course_id INTEGER NOT NULL,
+            lesson_id INTEGER NOT NULL,
+            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(student_id, lesson_id)
+        );
+    `;
     
     try {
         await query(createEnrollmentsTable);
         await query(createCertificatesTable);
+        await query(createLessonCompletionsTable);
+        await query(`CREATE INDEX IF NOT EXISTS idx_lesson_completions_student_course ON lesson_completions(student_id, course_id);`);
         console.log('✅ Learning DB tables initialized on PRIMARY');
         
         const lag = await getReplicationLag();

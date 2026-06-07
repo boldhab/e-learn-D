@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
-import { quizAPI } from '../services/api';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { courseAPI, quizAPI } from '../services/api';
 
 const blankQuestion = () => ({
   question_text: '',
@@ -16,16 +16,32 @@ const blankQuestion = () => ({
 
 const CreateQuiz = () => {
   const { courseId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const [lessons, setLessons] = useState([]);
+  const [lessonId, setLessonId] = useState(searchParams.get('lessonId') || '');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [timeLimit, setTimeLimit] = useState('');
-  const [passingScore, setPassingScore] = useState(70);
+  const [passingScore, setPassingScore] = useState(50);
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [publishNow, setPublishNow] = useState(true);
   const [questions, setQuestions] = useState([blankQuestion()]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    const loadLessons = async () => {
+      try {
+        const res = await courseAPI.getById(courseId);
+        setLessons(res.data.lessons || []);
+      } catch {
+        setLessons([]);
+      }
+    };
+
+    loadLessons();
+  }, [courseId]);
 
   const updateQuestion = (index, updates) => {
     setQuestions((current) => current.map((question, questionIndex) => (
@@ -66,6 +82,7 @@ const CreateQuiz = () => {
         course_id: parseInt(courseId, 10),
         title,
         description,
+        lesson_id: lessonId ? parseInt(lessonId, 10) : null,
         time_limit: timeLimit ? parseInt(timeLimit, 10) : null,
         passing_score: parseInt(passingScore, 10),
         max_attempts: parseInt(maxAttempts, 10),
@@ -102,7 +119,7 @@ const CreateQuiz = () => {
 
       <div style={{ maxWidth: 860, margin: '0 auto' }}>
         <h1 className="page-title">Create Quiz</h1>
-        <p className="page-subtitle">Build an assessment students can take after the course material.</p>
+        <p className="page-subtitle">Build an assessment students can take after a lesson. 50% or higher marks that lesson complete.</p>
 
         <div className="section-card">
           {error && <div className="alert alert-error" style={{ marginBottom: '1.5rem' }}>{error}</div>}
@@ -128,6 +145,21 @@ const CreateQuiz = () => {
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
               />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="quiz-lesson">Course Content</label>
+              <select
+                id="quiz-lesson"
+                className="form-input"
+                value={lessonId}
+                onChange={(event) => setLessonId(event.target.value)}
+              >
+                <option value="">Course-level quiz</option>
+                {lessons.map((lesson) => (
+                  <option key={lesson.id} value={lesson.id}>{lesson.title}</option>
+                ))}
+              </select>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>

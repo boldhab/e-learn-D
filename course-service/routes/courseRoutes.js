@@ -4,7 +4,9 @@ const {
   getAllCourses,
   getCourseById,
   addLesson,
+  updateLesson,
   getTeacherCourses,
+  getTeacherStats,
   getAdminCourses,
   approveCourse,
   reportContent,
@@ -22,7 +24,9 @@ router.post('/courses', verifyTeacher, createCourse);
 router.get('/courses', getAllCourses);
 router.get('/courses/:id', getCourseById);
 router.post('/lessons', verifyTeacher, addLesson);
+router.put('/lessons/:id', verifyTeacher, updateLesson);
 router.get('/teacher/:teacherId/courses', getTeacherCourses);
+router.get('/teacher/:teacherId/stats', verifyToken, getTeacherStats);
 router.post('/report', verifyToken, reportContent);
 router.get('/admin/courses', verifyAdmin, getAdminCourses);
 router.patch('/admin/courses/:id/approve', verifyAdmin, approveCourse);

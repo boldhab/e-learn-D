@@ -254,11 +254,6 @@ const updateProgress = async (req, res) => {
     let quizCompletion = null;
 
     if (progress === 100 && previous.rows[0].progress < 100) {
-      quizCompletion = await ensureQuizCompletion(
-        parseInt(student_id),
-        parseInt(course_id),
-        req.headers.authorization
-      );
       certificate = await findOrCreateCertificate({
         studentId: parseInt(student_id),
         courseId: parseInt(course_id),
@@ -314,6 +309,197 @@ const getProgress = async (req, res) => {
   }
 };
 
+const completeLesson = async (req, res) => {
+  const { student_id, course_id, lesson_id } = req.body;
+
+  if (!student_id || !course_id || !lesson_id) {
+    return res.status(400).json({ error: 'Student ID, course ID, and lesson ID are required' });
+  }
+
+  if (parseInt(student_id, 10) !== req.user.id && req.user.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'You can only complete your own lessons' });
+  }
+
+  try {
+    const enrollment = await query(
+      'SELECT * FROM enrollments WHERE student_id = $1 AND course_id = $2',
+      [student_id, course_id]
+    );
+
+    if (enrollment.rows.length === 0) {
+      return res.status(404).json({ error: 'Enrollment not found' });
+    }
+
+    const course = await getCourseDetails(course_id, req.headers.authorization);
+    const totalLessons = Array.isArray(course.lessons) ? course.lessons.length : 0;
+
+    if (totalLessons === 0) {
+      return res.status(400).json({ error: 'Course has no lessons to complete' });
+    }
+
+    const lessonBelongsToCourse = course.lessons.some((lesson) => Number(lesson.id) === Number(lesson_id));
+    if (!lessonBelongsToCourse) {
+      return res.status(400).json({ error: 'Lesson does not belong to this course' });
+    }
+
+    await query(
+      `INSERT INTO lesson_completions (student_id, course_id, lesson_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (student_id, lesson_id)
+       DO UPDATE SET completed_at = CURRENT_TIMESTAMP`,
+      [student_id, course_id, lesson_id]
+    );
+
+    const completionCount = await query(
+      'SELECT COUNT(*)::int AS completed_lessons FROM lesson_completions WHERE student_id = $1 AND course_id = $2',
+      [student_id, course_id]
+    );
+
+    const completedLessons = completionCount.rows[0].completed_lessons;
+    const progress = Math.min(100, Math.round((completedLessons / totalLessons) * 100));
+
+    const updatedEnrollment = await query(
+      `UPDATE enrollments
+       SET progress = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE student_id = $2 AND course_id = $3
+       RETURNING *`,
+      [progress, student_id, course_id]
+    );
+
+    res.json({
+      message: 'Lesson completed',
+      completed_lessons: completedLessons,
+      total_lessons: totalLessons,
+      progress,
+      course_completed: progress === 100,
+      enrollment: updatedEnrollment.rows[0],
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(error.response?.status || error.status || 500).json({
+      error: error.response?.data?.error || error.message || 'Internal server error',
+    });
+  }
+};
+
+const getDashboard = async (req, res) => {
+  const { studentId } = req.params;
+
+  if (parseInt(studentId, 10) !== req.user.id && req.user.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    const stats = await query(
+      `SELECT
+         COUNT(*)::int AS total_courses_enrolled,
+         COUNT(*) FILTER (WHERE progress = 100)::int AS completed_courses,
+         COALESCE(ROUND(AVG(progress)::numeric, 2), 0)::float AS average_progress
+       FROM enrollments
+       WHERE student_id = $1`,
+      [studentId]
+    );
+
+    const recent = await query(
+      `SELECT *
+       FROM enrollments
+       WHERE student_id = $1
+       ORDER BY updated_at DESC, enrolled_at DESC
+       LIMIT 5`,
+      [studentId]
+    );
+
+    const recent_activity = await Promise.all(
+      recent.rows.map(async (enrollment) => {
+        try {
+          const course = await getCourseDetails(enrollment.course_id, req.headers.authorization);
+          return {
+            course_id: enrollment.course_id,
+            title: course.title,
+            progress: enrollment.progress,
+            last_accessed_at: enrollment.updated_at || enrollment.enrolled_at
+          };
+        } catch {
+          return {
+            course_id: enrollment.course_id,
+            title: `Course #${enrollment.course_id}`,
+            progress: enrollment.progress,
+            last_accessed_at: enrollment.updated_at || enrollment.enrolled_at
+          };
+        }
+      })
+    );
+
+    res.json({
+      ...stats.rows[0],
+      recent_activity
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const getTeacherEnrollmentStats = async (req, res) => {
+  const { teacherId } = req.params;
+
+  if (parseInt(teacherId, 10) !== req.user.id && req.user.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    const response = await axios.get(
+      `${process.env.COURSE_SERVICE_URL}/api/teacher/${teacherId}/courses`,
+      { headers: { Authorization: req.headers.authorization } }
+    );
+    const courses = response.data || [];
+    const courseIds = courses.map((course) => Number(course.id));
+
+    if (courseIds.length === 0) {
+      return res.json({ total_students_enrolled: 0, courses: [], recent_enrollments: [] });
+    }
+
+    const byCourse = await query(
+      `SELECT course_id, COUNT(DISTINCT student_id)::int AS student_count
+       FROM enrollments
+       WHERE course_id = ANY($1::int[])
+       GROUP BY course_id`,
+      [courseIds]
+    );
+
+    const recent = await query(
+      `SELECT *
+       FROM enrollments
+       WHERE course_id = ANY($1::int[])
+       ORDER BY enrolled_at DESC
+       LIMIT 5`,
+      [courseIds]
+    );
+
+    const counts = new Map(byCourse.rows.map((row) => [Number(row.course_id), Number(row.student_count)]));
+
+    res.json({
+      total_students_enrolled: byCourse.rows.reduce((sum, row) => sum + Number(row.student_count), 0),
+      courses: courses.map((course) => ({
+        id: course.id,
+        title: course.title,
+        student_count: counts.get(Number(course.id)) || 0
+      })),
+      recent_enrollments: recent.rows.map((enrollment) => ({
+        id: enrollment.id,
+        course_id: enrollment.course_id,
+        course_title: courses.find((course) => Number(course.id) === Number(enrollment.course_id))?.title || `Course #${enrollment.course_id}`,
+        student_id: enrollment.student_id,
+        progress: enrollment.progress,
+        enrolled_at: enrollment.enrolled_at
+      }))
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 const getCompletedEnrollment = async (studentId, courseId, user, authorization) => {
   if (parseInt(studentId) !== user.id && user.role !== 'TEACHER' && user.role !== 'ADMIN') {
     const error = new Error('Access denied');
@@ -337,8 +523,6 @@ const getCompletedEnrollment = async (studentId, courseId, user, authorization) 
     error.status = 400;
     throw error;
   }
-
-  await ensureQuizCompletion(studentId, courseId, authorization);
 
   return result.rows[0];
 };
@@ -404,6 +588,9 @@ const getAdminSummary = async (req, res) => {
 module.exports = {
   enrollStudent,
   getStudentCourses,
+  getDashboard,
+  getTeacherEnrollmentStats,
+  completeLesson,
   updateProgress,
   getProgress,
   getCertificate,

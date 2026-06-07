@@ -9,6 +9,7 @@ const AddLesson = () => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [teacherNotes, setTeacherNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
@@ -36,6 +37,7 @@ const AddLesson = () => {
     setTitle('');
     setContent('');
     setVideoUrl('');
+    setTeacherNotes('');
     setError('');
   };
 
@@ -50,6 +52,7 @@ const AddLesson = () => {
         title,
         content,
         video_url: videoUrl || null,
+        teacher_notes: teacherNotes || null,
       });
       setSuccess(true);
       resetForm();
@@ -145,6 +148,20 @@ const AddLesson = () => {
                 <span style={{ fontSize:'0.78rem', color:'var(--text-muted)', marginTop:4 }}>
                   Paste a YouTube, Vimeo, or any public video link.
                 </span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="lesson-teacher-notes">
+                  Notes for Students (only visible to enrolled students)
+                </label>
+                <textarea
+                  id="lesson-teacher-notes"
+                  className="form-input"
+                  placeholder="Add reminders, links, examples, or extra context students should read after the lesson..."
+                  value={teacherNotes}
+                  onChange={(e) => setTeacherNotes(e.target.value)}
+                  rows={6}
+                />
               </div>
 
               {/* Preview */}

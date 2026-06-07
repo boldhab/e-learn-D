@@ -23,6 +23,28 @@ const ensureStudentEnrolled = async (studentId, courseId, authorization) => {
   }
 };
 
+const notifyLessonCompletion = async ({ studentId, courseId, lessonId, authorization }) => {
+  if (!lessonId) {
+    return null;
+  }
+
+  try {
+    const response = await axios.post(
+      `${LEARNING_SERVICE_URL}/api/lessons/complete`,
+      {
+        student_id: studentId,
+        course_id: courseId,
+        lesson_id: lessonId,
+      },
+      { headers: { Authorization: authorization } }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Failed to update lesson completion', error.response?.data || error.message);
+    return null;
+  }
+};
+
 // Helper: ownership check reads go through distributed router (replica for SELECT)
 const getQuizForTeacher = async (quizId, teacherId) => {
   const result = await query(
@@ -87,7 +109,7 @@ const validateQuizForPublish = async (quizId) => {
 };
 
 const createQuiz = async (req, res) => {
-  const { course_id, lesson_id, title, description, time_limit, passing_score = 70, max_attempts = 3 } = req.body;
+  const { course_id, lesson_id, title, description, time_limit, passing_score = 50, max_attempts = 3 } = req.body;
 
   if (!course_id || !title) {
     return res.status(400).json({ error: 'Course ID and title are required' });
@@ -517,6 +539,7 @@ const getQuizDetails = async (req, res) => {
       quiz: {
         id: quiz.id,
         course_id: quiz.course_id,
+        lesson_id: quiz.lesson_id,
         course_title: quiz.course_title,
         title: quiz.title,
         description: quiz.description,
@@ -612,7 +635,7 @@ const submitAttempt = async (req, res) => {
   try {
     const result = await transaction(async (client) => {
       const attemptResult = await client.query(
-        `SELECT qa.*, q.passing_score
+        `SELECT qa.*, q.passing_score, q.course_id, q.lesson_id
          FROM quiz_attempts qa
          JOIN quizzes q ON qa.quiz_id = q.id
          WHERE qa.id = $1 AND qa.student_id = $2 AND qa.completed_at IS NULL`,
@@ -702,6 +725,15 @@ const submitAttempt = async (req, res) => {
       };
     });
 
+    const lessonCompletion = result.percentage >= 50
+      ? await notifyLessonCompletion({
+        studentId,
+        courseId: result.attempt.course_id,
+        lessonId: result.attempt.lesson_id,
+        authorization: req.headers.authorization,
+      })
+      : null;
+
     res.json({
       message: 'Quiz submitted',
       attempt: result.attempt,
@@ -709,6 +741,7 @@ const submitAttempt = async (req, res) => {
       earned_points: result.earnedPoints,
       percentage: result.percentage,
       passed: result.passed,
+      lesson_completion: lessonCompletion,
       answers: result.gradedAnswers,
     });
   } catch (error) {
@@ -722,7 +755,7 @@ const getAttemptResult = async (req, res) => {
 
   try {
     const attemptResult = await query(
-      `SELECT qa.*, q.title as quiz_title, q.passing_score, c.teacher_id
+      `SELECT qa.*, q.title as quiz_title, q.passing_score, q.course_id, q.lesson_id, c.teacher_id
        FROM quiz_attempts qa
        JOIN quizzes q ON qa.quiz_id = q.id
        JOIN courses c ON q.course_id = c.id
@@ -757,6 +790,8 @@ const getAttemptResult = async (req, res) => {
       attempt: {
         id: attempt.id,
         quiz_id: attempt.quiz_id,
+        course_id: attempt.course_id,
+        lesson_id: attempt.lesson_id,
         quiz_title: attempt.quiz_title,
         score: attempt.score,
         percentage: attempt.percentage,

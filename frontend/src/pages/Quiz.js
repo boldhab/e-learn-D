@@ -11,6 +11,7 @@ const Quiz = () => {
   const [answers, setAnswers] = useState({});
   const [attemptId, setAttemptId] = useState(null);
   const [results, setResults] = useState(null);
+  const [completionSummary, setCompletionSummary] = useState(null);
   const [timeLeft, setTimeLeft] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -89,13 +90,14 @@ const Quiz = () => {
 
     try {
       const timeSpent = quiz.time_limit && timeLeft !== null ? quiz.time_limit * 60 - timeLeft : null;
-      await quizAPI.submitAttempt(attemptId, {
+      const submitRes = await quizAPI.submitAttempt(attemptId, {
         answers: answersArray,
         time_spent: timeSpent,
       });
 
       const resultRes = await quizAPI.getAttemptResult(attemptId);
       setResults(resultRes.data);
+      setCompletionSummary(submitRes.data.lesson_completion || null);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to submit quiz');
     } finally {
@@ -133,8 +135,12 @@ const Quiz = () => {
   if (results) {
     return (
       <div className="page-wrapper animate-fadeUp">
-        <Link to={`/course/${quiz.course_id}`} className="nav-link" style={{ display: 'inline-flex', marginBottom: '1.5rem' }}>
-          Back to course
+        <Link
+          to={quiz.lesson_id ? `/course/${quiz.course_id}/lesson/${quiz.lesson_id}` : `/course/${quiz.course_id}`}
+          className="nav-link"
+          style={{ display: 'inline-flex', marginBottom: '1.5rem' }}
+        >
+          Back to content
         </Link>
 
         <div className="section-card" style={{ marginBottom: '1.5rem' }}>
@@ -150,8 +156,18 @@ const Quiz = () => {
               <p style={{ margin: '0.35rem 0 0', color: 'var(--text-secondary)' }}>
                 Score: {results.attempt.score} points. Passing score: {results.attempt.passing_score}%.
               </p>
+              {completionSummary && (
+                <p style={{ margin: '0.35rem 0 0', color: 'var(--text-secondary)' }}>
+                  Lesson complete. Course progress is now {completionSummary.progress}%.
+                </p>
+              )}
             </div>
           </div>
+          {completionSummary?.course_completed && (
+            <Link to={`/certificate/${quiz.course_id}`} className="btn btn-success" style={{ marginTop:'1.25rem' }}>
+              Go to Certificate
+            </Link>
+          )}
         </div>
 
         <div className="section-card">
@@ -187,8 +203,12 @@ const Quiz = () => {
 
   return (
     <div className="page-wrapper animate-fadeUp">
-      <Link to={`/course/${quiz.course_id}`} className="nav-link" style={{ display: 'inline-flex', marginBottom: '1.5rem' }}>
-        Back to course
+      <Link
+        to={quiz.lesson_id ? `/course/${quiz.course_id}/lesson/${quiz.lesson_id}` : `/course/${quiz.course_id}`}
+        className="nav-link"
+        style={{ display: 'inline-flex', marginBottom: '1.5rem' }}
+      >
+        Back to content
       </Link>
 
       <div className="detail-hero" style={{ marginBottom: '1.5rem' }}>

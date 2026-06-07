@@ -49,6 +49,38 @@ const getViewer = async (authorization) => {
   }
 };
 
+const isStudentEnrolled = async (studentId, courseId, authorization) => {
+  if (!process.env.LEARNING_SERVICE_URL) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(
+      `${process.env.LEARNING_SERVICE_URL}/api/progress/${studentId}/${courseId}`,
+      { headers: authorization ? { Authorization: authorization } : {} }
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+const canViewTeacherNotes = async (viewer, course, authorization) => {
+  if (!viewer) {
+    return false;
+  }
+
+  if (viewer.role === 'ADMIN' || viewer.id === course.teacher_id) {
+    return true;
+  }
+
+  if (viewer.role === 'STUDENT') {
+    return isStudentEnrolled(viewer.id, course.id, authorization);
+  }
+
+  return false;
+};
+
 const createCourse = async (req, res) => {
   const { title, description, difficulty = 'BEGINNER', category } = req.body;
   const teacherId = req.user.id;
@@ -176,10 +208,14 @@ const getCourseById = async (req, res) => {
       'SELECT * FROM lessons WHERE course_id = $1 ORDER BY "order" ASC',
       [id]
     );
+    const includeTeacherNotes = await canViewTeacherNotes(viewer, course, req.headers.authorization);
+    const lessons = includeTeacherNotes
+      ? lessonsResult.rows
+      : lessonsResult.rows.map(({ teacher_notes, ...lesson }) => lesson);
 
     res.json({
       ...course,
-      lessons: lessonsResult.rows
+      lessons
     });
   } catch (error) {
     console.error(error);
@@ -188,7 +224,7 @@ const getCourseById = async (req, res) => {
 };
 
 const addLesson = async (req, res) => {
-  const { course_id, title, content, video_url, order } = req.body;
+  const { course_id, title, content, video_url, order, teacher_notes } = req.body;
 
   if (!course_id || !title) {
     return res.status(400).json({ error: 'Course ID and title required' });
@@ -207,11 +243,59 @@ const addLesson = async (req, res) => {
     }
 
     const result = await query(
-      'INSERT INTO lessons (course_id, title, content, video_url, "order") VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [course_id, title, content, video_url, order || 0]
+      'INSERT INTO lessons (course_id, title, content, video_url, "order", teacher_notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [course_id, title, content, video_url, order || 0, teacher_notes || null]
     );
 
     res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const updateLesson = async (req, res) => {
+  const { id } = req.params;
+  const { title, content, video_url, order, teacher_notes } = req.body;
+
+  try {
+    const lessonCheck = await query(
+      `SELECT l.*, c.teacher_id
+       FROM lessons l
+       JOIN courses c ON c.id = l.course_id
+       WHERE l.id = $1`,
+      [id]
+    );
+
+    if (lessonCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Lesson not found' });
+    }
+
+    if (lessonCheck.rows[0].teacher_id !== req.user.id) {
+      return res.status(403).json({ error: 'Teacher notes can only be edited by the course owner' });
+    }
+
+    const current = lessonCheck.rows[0];
+    const result = await query(
+      `UPDATE lessons
+       SET title = $1,
+           content = $2,
+           video_url = $3,
+           "order" = $4,
+           teacher_notes = $5
+       WHERE id = $6
+       RETURNING *`,
+      [
+        title ?? current.title,
+        content ?? current.content,
+        video_url ?? current.video_url,
+        order ?? current.order,
+        teacher_notes ?? current.teacher_notes,
+        id
+      ]
+    );
+
+    res.json(result.rows[0]);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -227,6 +311,73 @@ const getTeacherCourses = async (req, res) => {
       [teacherId]
     );
     res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const getTeacherStats = async (req, res) => {
+  const { teacherId } = req.params;
+
+  if (parseInt(teacherId, 10) !== req.user.id && req.user.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    const courseStats = await query(
+      `SELECT
+         COUNT(DISTINCT c.id)::int AS total_courses_created,
+         COUNT(l.id)::int AS total_lessons
+       FROM courses c
+       LEFT JOIN lessons l ON l.course_id = c.id
+       WHERE c.teacher_id = $1`,
+      [teacherId]
+    );
+
+    const courses = await query(
+      `SELECT c.*, COUNT(l.id)::int AS lesson_count
+       FROM courses c
+       LEFT JOIN lessons l ON l.course_id = c.id
+       WHERE c.teacher_id = $1
+       GROUP BY c.id
+       ORDER BY c.created_at DESC`,
+      [teacherId]
+    );
+
+    let enrollmentStats = {
+      total_students_enrolled: 0,
+      courses: [],
+      recent_enrollments: []
+    };
+
+    if (process.env.LEARNING_SERVICE_URL) {
+      try {
+        const response = await fetch(
+          `${process.env.LEARNING_SERVICE_URL}/api/teacher/${teacherId}/stats`,
+          { headers: req.headers.authorization ? { Authorization: req.headers.authorization } : {} }
+        );
+        if (response.ok) {
+          enrollmentStats = await response.json();
+        }
+      } catch {
+        // Keep course-owned stats available even if learning-service is unavailable.
+      }
+    }
+
+    const enrollmentByCourse = new Map(
+      (enrollmentStats.courses || []).map((course) => [Number(course.id), course])
+    );
+
+    res.json({
+      ...courseStats.rows[0],
+      total_students_enrolled: enrollmentStats.total_students_enrolled || 0,
+      courses: courses.rows.map((course) => ({
+        ...course,
+        student_count: enrollmentByCourse.get(Number(course.id))?.student_count || 0
+      })),
+      recent_enrollments: enrollmentStats.recent_enrollments || []
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
@@ -404,7 +555,9 @@ module.exports = {
   getAllCourses,
   getCourseById,
   addLesson,
+  updateLesson,
   getTeacherCourses,
+  getTeacherStats,
   getAdminCourses,
   approveCourse,
   reportContent,
