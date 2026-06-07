@@ -1,0 +1,412 @@
+const { query } = require('../db');
+const axios = require('axios');
+const PDFDocument = require('pdfkit');
+
+const generateCertificateCode = (studentId, courseId) => {
+  const uniquePart = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `CERT-${studentId}-${courseId}-${uniquePart}`.toUpperCase();
+};
+
+const getCourseDetails = async (courseId, authorization) => {
+  const headers = authorization ? { Authorization: authorization } : {};
+  const response = await axios.get(
+    `${process.env.COURSE_SERVICE_URL}/api/courses/${courseId}`,
+    { headers }
+  );
+  return response.data;
+};
+
+const getQuizCompletion = async (studentId, courseId, authorization) => {
+  const headers = authorization ? { Authorization: authorization } : {};
+  const response = await axios.get(
+    `${process.env.COURSE_SERVICE_URL}/api/courses/${courseId}/students/${studentId}/quiz-completion`,
+    { headers }
+  );
+  return response.data;
+};
+
+const ensureQuizCompletion = async (studentId, courseId, authorization) => {
+  const completion = await getQuizCompletion(studentId, courseId, authorization);
+
+  if (!completion.completed) {
+    const error = new Error('All required quizzes must be passed before certificate generation');
+    error.status = 400;
+    error.quiz_completion = completion;
+    throw error;
+  }
+
+  return completion;
+};
+
+const findOrCreateCertificate = async ({ studentId, courseId, studentName, authorization }) => {
+  const existing = await query(
+    'SELECT * FROM certificates WHERE student_id = $1 AND course_id = $2',
+    [studentId, courseId]
+  );
+
+  if (existing.rows.length > 0) {
+    return existing.rows[0];
+  }
+
+  const course = await getCourseDetails(courseId, authorization);
+  const result = await query(
+    `INSERT INTO certificates (student_id, course_id, certificate_code, student_name, course_title)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (student_id, course_id) DO UPDATE
+       SET student_name = EXCLUDED.student_name
+     RETURNING *`,
+    [
+      studentId,
+      courseId,
+      generateCertificateCode(studentId, courseId),
+      studentName || 'Student',
+      course.title,
+    ]
+  );
+
+  return result.rows[0];
+};
+
+const streamCertificatePdf = (certificate, res) => {
+  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 50 });
+  const issuedDate = new Date(certificate.issued_at).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="certificate-${certificate.course_id}.pdf"`
+  );
+
+  doc.pipe(res);
+
+  doc
+    .rect(30, 30, 782, 535)
+    .lineWidth(3)
+    .strokeColor('#1f2937')
+    .stroke();
+
+  doc
+    .fontSize(34)
+    .fillColor('#111827')
+    .text('Certificate of Completion', 0, 95, { align: 'center' });
+
+  doc
+    .moveDown(1.2)
+    .fontSize(16)
+    .fillColor('#4b5563')
+    .text('This certifies that', { align: 'center' });
+
+  doc
+    .moveDown(0.6)
+    .fontSize(30)
+    .fillColor('#111827')
+    .text(certificate.student_name, { align: 'center' });
+
+  doc
+    .moveDown(0.7)
+    .fontSize(16)
+    .fillColor('#4b5563')
+    .text('has successfully completed', { align: 'center' });
+
+  doc
+    .moveDown(0.5)
+    .fontSize(24)
+    .fillColor('#2563eb')
+    .text(certificate.course_title, { align: 'center' });
+
+  doc
+    .moveDown(1.4)
+    .fontSize(13)
+    .fillColor('#374151')
+    .text(`Issued on ${issuedDate}`, { align: 'center' });
+
+  doc
+    .moveDown(0.5)
+    .fontSize(10)
+    .fillColor('#6b7280')
+    .text(`Certificate ID: ${certificate.certificate_code}`, { align: 'center' });
+
+  doc.end();
+};
+
+const enrollStudent = async (req, res) => {
+  const { course_id } = req.body;
+  const student_id = req.user.id;
+  
+  if (!course_id) {
+    return res.status(400).json({ error: 'Course ID required' });
+  }
+  
+  // Verify student role
+  if (req.user.role !== 'STUDENT') {
+    return res.status(403).json({ error: 'Only students can enroll' });
+  }
+  
+  try {
+    // Verify course exists via course-service
+    const courseResponse = await axios.get(
+      `${process.env.COURSE_SERVICE_URL}/api/courses/${course_id}`,
+      { headers: { Authorization: req.headers.authorization } }
+    );
+    
+    if (!courseResponse.data) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    
+    // Check for duplicate enrollment
+    const existing = await query(
+      'SELECT * FROM enrollments WHERE student_id = $1 AND course_id = $2',
+      [student_id, course_id]
+    );
+    
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Already enrolled in this course' });
+    }
+    
+    const result = await query(
+      'INSERT INTO enrollments (student_id, course_id, progress) VALUES ($1, $2, $3) RETURNING *',
+      [student_id, course_id, 0]
+    );
+    
+    res.status(201).json({
+      message: 'Successfully enrolled',
+      enrollment: result.rows[0]
+    });
+  } catch (error) {
+    if (error.response && error.response.status === 404) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const getStudentCourses = async (req, res) => {
+  const { studentId } = req.params;
+  
+  // Only allow users to see their own courses
+  if (parseInt(studentId) !== req.user.id && req.user.role !== 'TEACHER') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  
+  try {
+    const enrollments = await query(
+      'SELECT * FROM enrollments WHERE student_id = $1',
+      [studentId]
+    );
+    
+    // Fetch course details for each enrollment
+    const courses = await Promise.all(
+      enrollments.rows.map(async (enrollment) => {
+        try {
+          const courseResponse = await axios.get(
+            `${process.env.COURSE_SERVICE_URL}/api/courses/${enrollment.course_id}`
+          );
+          return {
+            ...courseResponse.data,
+            progress: enrollment.progress,
+            enrolled_at: enrollment.enrolled_at
+          };
+        } catch (err) {
+          return null;
+        }
+      })
+    );
+    
+    res.json(courses.filter(c => c !== null));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const updateProgress = async (req, res) => {
+  const { student_id, course_id, progress } = req.body;
+  
+  if (!student_id || !course_id || progress === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  
+  if (progress < 0 || progress > 100) {
+    return res.status(400).json({ error: 'Progress must be between 0 and 100' });
+  }
+  
+  // Verify user is updating their own progress
+  if (parseInt(student_id) !== req.user.id) {
+    return res.status(403).json({ error: 'You can only update your own progress' });
+  }
+  
+  try {
+    const previous = await query(
+      'SELECT * FROM enrollments WHERE student_id = $1 AND course_id = $2',
+      [student_id, course_id]
+    );
+
+    if (previous.rows.length === 0) {
+      return res.status(404).json({ error: 'Enrollment not found' });
+    }
+
+    let certificate = null;
+    let quizCompletion = null;
+
+    if (progress === 100 && previous.rows[0].progress < 100) {
+      quizCompletion = await ensureQuizCompletion(
+        parseInt(student_id),
+        parseInt(course_id),
+        req.headers.authorization
+      );
+      certificate = await findOrCreateCertificate({
+        studentId: parseInt(student_id),
+        courseId: parseInt(course_id),
+        studentName: req.user.name,
+        authorization: req.headers.authorization,
+      });
+    }
+
+    const result = await query(
+      `UPDATE enrollments 
+       SET progress = $1, updated_at = CURRENT_TIMESTAMP 
+       WHERE student_id = $2 AND course_id = $3 
+       RETURNING *`,
+      [progress, student_id, course_id]
+    );
+    
+    res.json({
+      message: 'Progress updated',
+      enrollment: result.rows[0],
+      quiz_completion: quizCompletion,
+      certificate
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(error.status || 500).json({
+      error: error.message || 'Internal server error',
+      quiz_completion: error.quiz_completion,
+    });
+  }
+};
+
+const getProgress = async (req, res) => {
+  const { studentId, courseId } = req.params;
+  
+  if (parseInt(studentId) !== req.user.id && req.user.role !== 'TEACHER') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  
+  try {
+    const result = await query(
+      'SELECT * FROM enrollments WHERE student_id = $1 AND course_id = $2',
+      [studentId, courseId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Enrollment not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+const getCompletedEnrollment = async (studentId, courseId, user, authorization) => {
+  if (parseInt(studentId) !== user.id && user.role !== 'TEACHER' && user.role !== 'ADMIN') {
+    const error = new Error('Access denied');
+    error.status = 403;
+    throw error;
+  }
+
+  const result = await query(
+    'SELECT * FROM enrollments WHERE student_id = $1 AND course_id = $2',
+    [studentId, courseId]
+  );
+
+  if (result.rows.length === 0) {
+    const error = new Error('Enrollment not found');
+    error.status = 404;
+    throw error;
+  }
+
+  if (result.rows[0].progress < 100) {
+    const error = new Error('Course is not completed yet');
+    error.status = 400;
+    throw error;
+  }
+
+  await ensureQuizCompletion(studentId, courseId, authorization);
+
+  return result.rows[0];
+};
+
+const getCertificate = async (req, res) => {
+  const { studentId, courseId } = req.params;
+
+  try {
+    await getCompletedEnrollment(studentId, courseId, req.user, req.headers.authorization);
+
+    const certificate = await findOrCreateCertificate({
+      studentId: parseInt(studentId),
+      courseId: parseInt(courseId),
+      studentName: parseInt(studentId) === req.user.id ? req.user.name : 'Student',
+      authorization: req.headers.authorization,
+    });
+
+    res.json(certificate);
+  } catch (error) {
+    console.error(error);
+    res.status(error.status || 500).json({ error: error.message || 'Internal server error' });
+  }
+};
+
+const downloadCertificate = async (req, res) => {
+  const { studentId, courseId } = req.params;
+
+  try {
+    await getCompletedEnrollment(studentId, courseId, req.user, req.headers.authorization);
+
+    const certificate = await findOrCreateCertificate({
+      studentId: parseInt(studentId),
+      courseId: parseInt(courseId),
+      studentName: parseInt(studentId) === req.user.id ? req.user.name : 'Student',
+      authorization: req.headers.authorization,
+    });
+
+    streamCertificatePdf(certificate, res);
+  } catch (error) {
+    console.error(error);
+    res.status(error.status || 500).json({ error: error.message || 'Internal server error' });
+  }
+};
+
+const getAdminSummary = async (req, res) => {
+  try {
+    const enrollmentCounts = await query(`
+      SELECT
+        COUNT(*)::int AS total_enrollments,
+        ROUND(AVG(progress)::numeric, 2)::float AS average_progress,
+        COUNT(*) FILTER (WHERE progress = 100)::int AS completed_enrollments,
+        COUNT(*) FILTER (WHERE progress > 0 AND progress < 100)::int AS in_progress_enrollments
+      FROM enrollments
+    `);
+
+    res.json(enrollmentCounts.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+module.exports = {
+  enrollStudent,
+  getStudentCourses,
+  updateProgress,
+  getProgress,
+  getCertificate,
+  downloadCertificate,
+  getAdminSummary
+};
