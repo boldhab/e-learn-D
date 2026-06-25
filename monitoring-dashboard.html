@@ -428,7 +428,7 @@
       <article class="card stat">
         <div class="label">🔄 Read / Write</div>
         <div class="stat-value" id="readWriteRatio">--</div>
-        <div class="stat-sub" id="rwDetail">Replica routed reads vs primary writes</div>
+        <div class="stat-sub" id="rwDetail">Primary reads and writes across services</div>
       </article>
     </section>
 
@@ -529,15 +529,20 @@
     const state = {
       serviceHealth: {},
       countdown: REFRESH_SECONDS,
-      sampleActivity: [
-        { timestamp: new Date().toISOString(), method: "GET", path: "/api/courses", status: 200, server: "Replica" },
-        { timestamp: new Date(Date.now() - 19000).toISOString(), method: "POST", path: "/auth/login", status: 200, server: "Primary" },
-        { timestamp: new Date(Date.now() - 33000).toISOString(), method: "GET", path: "/api/enrollments/student/12", status: 200, server: "Replica" },
-        { timestamp: new Date(Date.now() - 48000).toISOString(), method: "POST", path: "/api/courses", status: 201, server: "Primary" },
-        { timestamp: new Date(Date.now() - 62000).toISOString(), method: "GET", path: "/auth/me", status: 200, server: "Replica" },
-        { timestamp: new Date(Date.now() - 79000).toISOString(), method: "PUT", path: "/api/progress", status: 200, server: "Primary" }
-      ]
+      activity: []
     };
+
+    const monitoringStatsEndpoints = [
+      { service: "auth", url: "http://localhost:5001/api/monitoring/stats" },
+      { service: "course", url: "http://localhost:5002/api/monitoring/stats" },
+      { service: "learning", url: "http://localhost:5003/api/monitoring/stats" }
+    ];
+
+    const monitoringActivityEndpoints = [
+      { service: "auth", url: "http://localhost:5001/api/monitoring/activity" },
+      { service: "course", url: "http://localhost:5002/api/monitoring/activity" },
+      { service: "learning", url: "http://localhost:5003/api/monitoring/activity" }
+    ];
 
     const fmt = new Intl.NumberFormat();
 
@@ -658,28 +663,85 @@
     }
 
     async function updateStats() {
-      // Simulate stats with demo data for now
-      // In production, these would come from your services
-      const demoStats = {
-        users: 47,
-        courses: 12,
-        enrollments: 156,
-        reads: 1234,
-        writes: 567
+      const totals = {
+        users: 0,
+        courses: 0,
+        enrollments: 0,
+        reads: 0,
+        writes: 0,
+        onlineServices: 0
       };
-      
-      document.getElementById("totalUsers").textContent = demoStats.users;
-      document.getElementById("totalCourses").textContent = demoStats.courses;
-      document.getElementById("totalEnrollments").textContent = demoStats.enrollments;
-      
-      const ratio = demoStats.writes > 0 ? (demoStats.reads / demoStats.writes).toFixed(2) : "∞";
-      document.getElementById("readWriteRatio").textContent = `${ratio}:1`;
-      document.getElementById("rwDetail").textContent = `${fmt.format(demoStats.reads)} reads / ${fmt.format(demoStats.writes)} writes`;
+
+      const results = await Promise.allSettled(
+        monitoringStatsEndpoints.map(async (endpoint) => ({
+          endpoint,
+          data: await fetchJson(endpoint.url)
+        }))
+      );
+
+      results.forEach((result) => {
+        if (result.status !== "fulfilled" || result.value.data.error) {
+          return;
+        }
+
+        const data = result.value.data;
+        totals.onlineServices += 1;
+        totals.users += Number(data.totalUsers || 0);
+        totals.courses += Number(data.totalCourses || 0);
+        totals.enrollments += Number(data.totalEnrollments || 0);
+        totals.reads += Number(data.reads || 0);
+        totals.writes += Number(data.writes || 0);
+      });
+
+      document.getElementById("totalUsers").textContent = fmt.format(totals.users);
+      document.getElementById("totalCourses").textContent = fmt.format(totals.courses);
+      document.getElementById("totalEnrollments").textContent = fmt.format(totals.enrollments);
+
+      const ratio = totals.writes > 0 ? (totals.reads / totals.writes).toFixed(2) : (totals.reads > 0 ? "∞" : "0");
+      document.getElementById("readWriteRatio").textContent = totals.writes > 0 ? `${ratio}:1` : ratio;
+      document.getElementById("rwDetail").textContent =
+        `${fmt.format(totals.reads)} reads / ${fmt.format(totals.writes)} writes from ${totals.onlineServices}/3 services`;
+    }
+
+    async function updateActivity() {
+      const results = await Promise.allSettled(
+        monitoringActivityEndpoints.map(async (endpoint) => ({
+          endpoint,
+          data: await fetchJson(endpoint.url)
+        }))
+      );
+
+      const rows = [];
+
+      results.forEach((result) => {
+        if (result.status !== "fulfilled" || result.value.data.error) {
+          return;
+        }
+
+        const payload = result.value.data;
+        const activityRows = Array.isArray(payload)
+          ? payload
+          : Array.isArray(payload.activity)
+            ? payload.activity
+            : [];
+
+        activityRows.forEach((row) => {
+          rows.push({
+            ...row,
+            service: result.value.endpoint.service,
+            timestamp: row.timestamp || new Date().toISOString()
+          });
+        });
+      });
+
+      state.activity = rows
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 10);
     }
 
     function renderActivity() {
       const body = document.getElementById("activityBody");
-      const rows = state.sampleActivity;
+      const rows = state.activity;
 
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="5" class="empty-state">No API calls captured yet.</td></tr>`;
@@ -696,7 +758,7 @@
             <td><span class="method">${row.method}</span></td>
             <td>${escapeHtml(row.path)}</td>
             <td>${statusColor} ${row.status}</td>
-            <td><span class="server-pill ${row.server.toLowerCase()}">${row.server}</span></td>
+            <td><span class="server-pill">${escapeHtml(row.service || row.server || "unknown")}</span></td>
           </tr>
         `;
       }).join("");
@@ -705,6 +767,7 @@
     async function refreshAll() {
       await updateServices();
       await updateStats();
+      await updateActivity();
       renderActivity();
       document.getElementById("lastUpdated").textContent = new Date().toLocaleTimeString();
       state.countdown = REFRESH_SECONDS;
